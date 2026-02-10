@@ -1,0 +1,12 @@
+# VirtualBox
+*.vbox
+*.vbox-prev
+*.vdi
+*.vmdk
+
+# Capturas de pantalla temporales
+/screenshots/temp*
+
+# Archivos de sistema
+Thumbs.db
+.DS_Store
