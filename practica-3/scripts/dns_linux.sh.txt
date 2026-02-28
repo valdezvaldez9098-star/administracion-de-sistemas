@@ -1,0 +1,574 @@
+#!/bin/bash
+# ==============================================
+#        DNS AUTOMATIZADO - RED_SISTEMAS
+#        Linux Devuan Daedalus
+#        Adaptador: eth1
+# ==============================================
+
+ADAPTADOR="eth1"
+CONFIG_DIR="/etc/bind"
+ZONES_DIR="/var/cache/bind"
+NAMED_CONF_LOCAL="$CONFIG_DIR/named.conf.local"
+NAMED_CONF_OPTIONS="$CONFIG_DIR/named.conf.options"
+DEFAULT_ZONE="reprobados.com"
+
+# Colores para output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# ---------------- FUNCIONES AUXILIARES ----------------
+
+function pause {
+    echo ""
+    read -p "Presiona ENTER para continuar"
+}
+
+function mostrar_error {
+    echo -e "${RED}ERROR: $1${NC}"
+}
+
+function mostrar_exito {
+    echo -e "${GREEN}$1${NC}"
+}
+
+function mostrar_info {
+    echo -e "${YELLOW}$1${NC}"
+}
+
+# ---------------- VALIDAR IP ----------------
+
+function validar_ip {
+    local ip=$1
+    local IFS='.'
+    
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        local octetos=($ip)
+        for octeto in "${octetos[@]}"; do
+            if [[ $octeto -gt 255 ]]; then
+                return 1
+            fi
+        done
+        return 0
+    fi
+    return 1
+}
+
+# ---------------- OBTENER IP DEL SERVIDOR ----------------
+
+function obtener_ip_servidor {
+    # Obtener IP del adaptador eth1
+    local ip_actual=$(ip addr show $ADAPTADOR 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+    
+    if [[ -z $ip_actual ]]; then
+        mostrar_error "El servidor no tiene IP configurada en $ADAPTADOR"
+        return 1
+    fi
+    
+    # Verificar si es IP privada (no loopback)
+    if [[ $ip_actual == 127.* ]]; then
+        mostrar_error "La IP es loopback, no válida para DNS"
+        return 1
+    fi
+    
+    echo $ip_actual
+    return 0
+}
+
+# ---------------- VERIFICAR DEPENDENCIAS ----------------
+
+function verificar_dependencias {
+    mostrar_info "Verificando dependencias..."
+    
+    # Verificar e instalar bind9 si es necesario
+    if ! dpkg -l | grep -q "bind9"; then
+        mostrar_info "Instalando bind9..."
+        apt-get update
+        apt-get install -y bind9 bind9utils bind9-doc
+    fi
+    
+    # Verificar que bind9 esté realmente instalado
+    if ! dpkg -l | grep -q "bind9"; then
+        mostrar_error "No se pudo instalar bind9"
+        return 1
+    fi
+    
+    # Crear directorios necesarios
+    mkdir -p $ZONES_DIR
+    chown bind:bind $ZONES_DIR 2>/dev/null || true
+    
+    mostrar_exito "Dependencias verificadas"
+    return 0
+}
+
+# ---------------- VERIFICAR SERVICIO ----------------
+
+function servicio_dns_activo {
+    # Intentar con systemd (algunas instalaciones Devuan pueden tenerlo)
+    if command -v systemctl &>/dev/null; then
+        if systemctl is-active --quiet bind9 2>/dev/null; then
+            return 0
+        fi
+        if systemctl is-active --quiet named 2>/dev/null; then
+            return 0
+        fi
+    fi
+    
+    # Intentar con sysvinit (Devuan por defecto)
+    if [[ -f /etc/init.d/bind9 ]] && /etc/init.d/bind9 status | grep -q "running"; then
+        return 0
+    fi
+    if [[ -f /etc/init.d/named ]] && /etc/init.d/named status | grep -q "running"; then
+        return 0
+    fi
+    
+    # Verificar proceso directamente
+    if pgrep -f "named" >/dev/null || pgrep -f "bind9" >/dev/null; then
+        return 0
+    fi
+    
+    return 1
+}
+
+function iniciar_servicio_dns {
+    if command -v systemctl &>/dev/null; then
+        if systemctl list-unit-files | grep -q bind9; then
+            systemctl start bind9 2>/dev/null && return 0
+        fi
+        if systemctl list-unit-files | grep -q named; then
+            systemctl start named 2>/dev/null && return 0
+        fi
+    fi
+    
+    if [[ -f /etc/init.d/bind9 ]]; then
+        /etc/init.d/bind9 start && return 0
+    fi
+    if [[ -f /etc/init.d/named ]]; then
+        /etc/init.d/named start && return 0
+    fi
+    
+    # Intentar ejecutar named directamente
+    named -u bind 2>/dev/null &
+    sleep 2
+    return 0
+}
+
+function reiniciar_servicio_dns {
+    if command -v systemctl &>/dev/null; then
+        if systemctl list-unit-files | grep -q bind9; then
+            systemctl restart bind9 2>/dev/null && return 0
+        fi
+        if systemctl list-unit-files | grep -q named; then
+            systemctl restart named 2>/dev/null && return 0
+        fi
+    fi
+    
+    if [[ -f /etc/init.d/bind9 ]]; then
+        /etc/init.d/bind9 restart && return 0
+    fi
+    if [[ -f /etc/init.d/named ]]; then
+        /etc/init.d/named restart && return 0
+    fi
+    
+    # Matar proceso y reiniciar
+    pkill -f named 2>/dev/null
+    pkill -f bind9 2>/dev/null
+    sleep 2
+    named -u bind 2>/dev/null &
+    return 0
+}
+
+# ---------------- ESTADO DNS ----------------
+
+function estado_dns {
+    mostrar_info "===== ESTADO DNS ====="
+    echo ""
+    
+    # Verificar si está instalado
+    if dpkg -l | grep -q "bind9"; then
+        mostrar_exito "Paquete BIND9: INSTALADO"
+    else
+        mostrar_error "Paquete BIND9: NO instalado"
+        pause
+        return
+    fi
+    
+    # Verificar servicio
+    if servicio_dns_activo; then
+        mostrar_exito "Servicio DNS: ACTIVO"
+    else
+        mostrar_error "Servicio DNS: INACTIVO"
+    fi
+    
+    # Verificar adaptador
+    if ip link show $ADAPTADOR &>/dev/null; then
+        local estado=$(ip link show $ADAPTADOR | grep -o "state [^ ]*" | cut -d' ' -f2)
+        mostrar_exito "Adaptador $ADAPTADOR: $estado"
+        
+        # Mostrar IP actual
+        local ip_actual=$(ip addr show $ADAPTADOR | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+        if [[ -n $ip_actual ]]; then
+            echo "IP actual: $ip_actual"
+        fi
+    else
+        mostrar_error "Adaptador $ADAPTADOR no encontrado"
+    fi
+    
+    pause
+}
+
+# ---------------- INSTALAR / REINSTALAR DNS ----------------
+
+function instalar_dns {
+    mostrar_info "===== INSTALAR / REINSTALAR DNS ====="
+    
+    # Verificar dependencias
+    verificar_dependencias
+    
+    # Verificar si ya está instalado
+    if dpkg -l | grep -q "bind9"; then
+        read -p "BIND9 ya está instalado. ¿Reinstalar? (s/n): " resp
+        if [[ $resp == "s" || $resp == "S" ]]; then
+            reiniciar_servicio_dns
+            apt-get remove --purge -y bind9 bind9utils bind9-doc
+            apt-get install -y bind9 bind9utils bind9-doc
+        else
+            return
+        fi
+    else
+        apt-get update
+        apt-get install -y bind9 bind9utils bind9-doc
+    fi
+    
+    # Configurar opciones básicas
+    cat > $NAMED_CONF_OPTIONS << EOF
+options {
+    directory "/var/cache/bind";
+    
+    listen-on { any; };
+    listen-on-v6 { any; };
+    
+    allow-query { any; };
+    
+    forwarders {
+        8.8.8.8;
+        8.8.4.4;
+    };
+    
+    recursion yes;
+};
+EOF
+    
+    reiniciar_servicio_dns
+    
+    mostrar_exito "Proceso completado."
+    pause
+}
+
+# ---------------- RECONFIGURAR REPROBADOS.COM ----------------
+
+function configurar_reprobados {
+    
+    local DOMINIO="reprobados.com"
+    local ZONE_FILE="$ZONES_DIR/db.$DOMINIO"
+    
+    # Obtener IP del servidor
+    local IP_SERVIDOR=$(obtener_ip_servidor)
+    if [[ $? -ne 0 ]]; then
+        pause
+        return
+    fi
+    
+    if ! validar_ip $IP_SERVIDOR; then
+        mostrar_error "IP inválida: $IP_SERVIDOR"
+        pause
+        return
+    fi
+    
+    # Verificar si la zona ya existe en named.conf.local
+    if [[ ! -f $NAMED_CONF_LOCAL ]]; then
+        touch $NAMED_CONF_LOCAL
+    fi
+    
+    if ! grep -q "zone \"$DOMINIO\"" $NAMED_CONF_LOCAL 2>/dev/null; then
+        # Agregar zona al archivo de configuración
+        cat >> $NAMED_CONF_LOCAL << EOF
+
+zone "$DOMINIO" {
+    type master;
+    file "$ZONE_FILE";
+};
+EOF
+        mostrar_exito "Zona $DOMINIO agregada a named.conf.local"
+    fi
+    
+    # Crear archivo de zona
+    local SERIAL=$(date +%Y%m%d01)
+    
+    cat > $ZONE_FILE << EOF
+; Archivo de zona para $DOMINIO
+; Generado automáticamente
+
+\$TTL    604800
+@       IN      SOA     $DOMINIO. admin.$DOMINIO. (
+                   $SERIAL          ; Serial
+                      604800         ; Refresh
+                       86400         ; Retry
+                     2419200         ; Expire
+                      604800 )       ; Negative Cache TTL
+
+; Servidores de nombres
+@       IN      NS      ns1.$DOMINIO.
+ns1     IN      A       $IP_SERVIDOR
+
+; Registros A
+@       IN      A       $IP_SERVIDOR
+www     IN      A       $IP_SERVIDOR
+EOF
+    
+    # Establecer permisos
+    chown bind:bind $ZONE_FILE 2>/dev/null || true
+    
+    # Verificar configuración
+    if named-checkconf $NAMED_CONF_LOCAL && named-checkzone $DOMINIO $ZONE_FILE; then
+        mostrar_exito "Configuración válida"
+        
+        # Reiniciar servicio
+        reiniciar_servicio_dns
+        
+        mostrar_exito ""
+        mostrar_exito "========================================="
+        mostrar_exito "reprobados.com configurado con IP $IP_SERVIDOR"
+        mostrar_exito "========================================="
+    else
+        mostrar_error "Error en la configuración"
+        named-checkzone $DOMINIO $ZONE_FILE
+    fi
+    
+    pause
+}
+
+# ---------------- ADMINISTRAR DOMINIOS ----------------
+
+function administrar_dominios {
+    
+    while true; do
+        clear
+        mostrar_info "===== ADMINISTRAR DOMINIOS ====="
+        echo "A) Agregar dominio"
+        echo "B) Eliminar dominio"
+        echo "C) Listar dominios"
+        echo "D) Reconfigurar reprobados.com (IP automática del servidor)"
+        echo "E) Volver al menú principal"
+        echo ""
+        read -p "Opción: " op
+    
+        case ${op^^} in
+    
+            # -------- AGREGAR --------
+            "A")
+                clear
+                mostrar_info "--- AGREGAR DOMINIO ---"
+                
+                read -p "Nombre del dominio (ej: empresa.com): " DOMINIO
+                
+                # Validar nombre de dominio (básico)
+                if [[ ! $DOMINIO =~ ^[a-zA-Z0-9.-]+$ ]]; then
+                    mostrar_error "Nombre de dominio inválido"
+                    pause
+                    continue
+                fi
+                
+                read -p "IP que se asignará al dominio: " IP_ASIGNADA
+                
+                if ! validar_ip $IP_ASIGNADA; then
+                    mostrar_error "IP inválida"
+                    pause
+                    continue
+                fi
+                
+                local ZONE_FILE="$ZONES_DIR/db.$DOMINIO"
+                
+                # Verificar si la zona ya existe
+                if [[ -f $NAMED_CONF_LOCAL ]] && grep -q "zone \"$DOMINIO\"" $NAMED_CONF_LOCAL 2>/dev/null; then
+                    mostrar_error "La zona $DOMINIO ya existe"
+                    pause
+                    continue
+                fi
+                
+                # Agregar zona al archivo de configuración
+                cat >> $NAMED_CONF_LOCAL << EOF
+
+zone "$DOMINIO" {
+    type master;
+    file "$ZONE_FILE";
+};
+EOF
+                
+                # Crear archivo de zona
+                local SERIAL=$(date +%Y%m%d01)
+                
+                cat > $ZONE_FILE << EOF
+; Archivo de zona para $DOMINIO
+; Generado automáticamente
+
+\$TTL    604800
+@       IN      SOA     $DOMINIO. admin.$DOMINIO. (
+                   $SERIAL          ; Serial
+                      604800         ; Refresh
+                       86400         ; Retry
+                     2419200         ; Expire
+                      604800 )       ; Negative Cache TTL
+
+; Servidores de nombres
+@       IN      NS      ns1.$DOMINIO.
+ns1     IN      A       $IP_ASIGNADA
+
+; Registros A
+@       IN      A       $IP_ASIGNADA
+www     IN      A       $IP_ASIGNADA
+EOF
+                
+                chown bind:bind $ZONE_FILE 2>/dev/null || true
+                
+                # Verificar configuración
+                if named-checkconf $NAMED_CONF_LOCAL && named-checkzone $DOMINIO $ZONE_FILE; then
+                    reiniciar_servicio_dns
+                    mostrar_exito "Dominio $DOMINIO creado correctamente."
+                else
+                    mostrar_error "Error en la configuración"
+                    # Eliminar zona del archivo si hay error
+                    sed -i "/zone \"$DOMINIO\" {/,/};/d" $NAMED_CONF_LOCAL
+                    rm -f $ZONE_FILE
+                fi
+                
+                pause
+                ;;
+    
+            # -------- ELIMINAR --------
+            "B")
+                clear
+                mostrar_info "--- ELIMINAR DOMINIO ---"
+                
+                read -p "Nombre del dominio a eliminar: " DOMINIO_ELIMINAR
+                
+                local ZONE_FILE="$ZONES_DIR/db.$DOMINIO_ELIMINAR"
+                
+                if [[ -f $NAMED_CONF_LOCAL ]] && grep -q "zone \"$DOMINIO_ELIMINAR\"" $NAMED_CONF_LOCAL 2>/dev/null; then
+                    # Eliminar zona del archivo de configuración
+                    sed -i "/zone \"$DOMINIO_ELIMINAR\" {/,/};/d" $NAMED_CONF_LOCAL
+                    
+                    # Eliminar archivo de zona
+                    rm -f $ZONE_FILE
+                    
+                    reiniciar_servicio_dns
+                    mostrar_exito "Dominio $DOMINIO_ELIMINAR eliminado correctamente."
+                else
+                    mostrar_error "El dominio $DOMINIO_ELIMINAR no existe"
+                fi
+                
+                pause
+                ;;
+    
+            # -------- LISTAR --------
+            "C")
+                clear
+                mostrar_info "--- ZONAS CONFIGURADAS ---"
+                echo ""
+                
+                if [[ -f $NAMED_CONF_LOCAL ]]; then
+                    grep -B1 "zone" $NAMED_CONF_LOCAL | grep -v "^--" | while read line; do
+                        echo "  $line"
+                    done
+                else
+                    echo "  No hay zonas configuradas."
+                fi
+                
+                echo ""
+                pause
+                ;;
+    
+            # -------- REPROBADOS --------
+            "D")
+                clear
+                configurar_reprobados
+                ;;
+    
+            # -------- VOLVER --------
+            "E")
+                return
+                ;;
+    
+            *)
+                mostrar_error "Opción inválida"
+                pause
+                ;;
+        esac
+    done
+}
+
+# ---------------- MONITOREO ----------------
+
+function monitorear_dns {
+    mostrar_info "===== MONITOREO DNS ====="
+    
+    # Iniciar servicio si no está activo
+    if ! servicio_dns_activo; then
+        iniciar_servicio_dns
+    fi
+    
+    # Mostrar zonas configuradas
+    echo ""
+    echo "Zonas configuradas:"
+    echo "-------------------"
+    if [[ -f $NAMED_CONF_LOCAL ]]; then
+        grep -B1 "zone" $NAMED_CONF_LOCAL | grep -v "^--" | while read line; do
+            echo "  $line"
+        done
+    else
+        echo "  No hay zonas configuradas."
+    fi
+    
+    # Mostrar estadísticas básicas
+    echo ""
+    echo "Estadísticas:"
+    echo "-------------"
+    rndc stats 2>/dev/null || echo "  No se pueden obtener estadísticas"
+    
+    pause
+}
+
+# ---------------- MENU PRINCIPAL ----------------
+
+# Verificar dependencias al iniciar
+if ! verificar_dependencias; then
+    mostrar_error "Error en dependencias. Saliendo..."
+    exit 1
+fi
+
+while true; do
+    clear
+    echo "====== MENU DNS (Linux Devuan Daedalus) ======"
+    echo "Adaptador: $ADAPTADOR"
+    echo ""
+    echo "1) Ver estado del servicio"
+    echo "2) Instalar / Reinstalar DNS"
+    echo "3) Administrar dominios"
+    echo "4) Monitorear"
+    echo "5) Salir"
+    echo ""
+    read -p "Opción: " opcion
+    
+    case $opcion in
+        1) estado_dns ;;
+        2) instalar_dns ;;
+        3) administrar_dominios ;;
+        4) monitorear_dns ;;
+        5) exit 0 ;;
+        *) 
+            mostrar_error "Opción inválida"
+            pause
+            ;;
+    esac
+done
