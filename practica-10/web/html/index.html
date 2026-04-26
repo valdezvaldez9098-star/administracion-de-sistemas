@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tarea 10 — Servidor Web</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <div class="grid-bg" aria-hidden="true"></div>
+
+  <header>
+    <div class="header-left">
+      <span class="header-tag">// TAREA&nbsp;10</span>
+      <h1>Servidor Web</h1>
+    </div>
+    <div class="header-right">
+      <span class="header-name">García Valdez José Aldair</span>
+      <span class="header-num">3-01</span>
+    </div>
+  </header>
+
+  <main>
+
+    <section class="hero">
+      <div class="hero-img-wrap">
+        <img src="img/logo.png" alt="Logo">
+        <div class="hero-img-glow"></div>
+      </div>
+      <div class="hero-text">
+        <p class="hero-eyebrow">Infraestructura en Contenedores</p>
+        <h2>Virtualización<br><em>nativa</em> con Docker</h2>
+        <p class="hero-desc">Tres servicios (Apache Web, PostgreSQL y vsftpd FTP) desplegados con Docker sobre Devuan Daedalus 5.0.1.</p>
+      </div>
+    </section>
+
+    <section class="section-block">
+      <h3><span class="section-num">01</span> Servicios</h3>
+      <div class="cards">
+
+        <div class="card">
+          <div class="card-icon">◈</div>
+          <h4>Apache Web</h4>
+          <p>Debian 12 · Usuario no-root · ServerTokens Off</p>
+          <span class="badge">Activo</span>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">◈</div>
+          <h4>PostgreSQL</h4>
+          <p>postgres:15 · Volumen db_data · Respaldo en host</p>
+          <span class="badge">Activo</span>
+        </div>
+
+        <div class="card card--accent">
+          <div class="card-icon">◈</div>
+          <h4>vsftpd FTP</h4>
+          <p>Debian 12 · Grupos Alumno · Jaulas de usuario</p>
+          <span class="badge badge--accent">Activo</span>
+        </div>
+
+      </div>
+    </section>
+
+    <section class="section-block">
+      <h3><span class="section-num">02</span> Archivos FTP</h3>
+      <p class="section-desc">Visualiza los archivos disponibles en el volumen compartido entre el servidor FTP y el servidor web.</p>
+      <button class="ftp-btn" onclick="openFTP()">
+        <span>Ver archivos del servidor FTP</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+    </section>
+
+  </main>
+
+  <div class="modal-overlay" id="ftpModal">
+    <div class="modal">
+      <button class="modal-close" onclick="closeModal()" aria-label="Cerrar">&#10005;</button>
+      <p class="modal-eyebrow">// FTP</p>
+      <h3>Archivos del servidor FTP</h3>
+      <div class="ftp-grid">
+        <div class="ftp-field"><label>Host</label><span>localhost</span></div>
+        <div class="ftp-field"><label>Puerto</label><span>21</span></div>
+        <div class="ftp-field"><label>Contenedor</label><span>ftp_vsftpd</span></div>
+        <div class="ftp-field"><label>Volumen</label><span>web_content</span></div>
+      </div>
+      <div class="file-list" id="fileList">
+        <p>Haz clic en <strong>Actualizar</strong> para listar los archivos subidos via FTP.</p>
+      </div>
+      <button class="btn-refresh" onclick="loadFiles()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        Actualizar lista
+      </button>
+    </div>
+  </div>
+
+  <footer>
+    <span><strong>Tarea 10</strong> · Docker · Devuan Daedalus · Apache · PostgreSQL · vsftpd</span>
+    <span class="footer-name">José Aldair García Valdez — 3-01</span>
+  </footer>
+
+<script>
+  function openFTP()    { document.getElementById('ftpModal').classList.add('open'); }
+  function closeModal() { document.getElementById('ftpModal').classList.remove('open'); }
+  document.getElementById('ftpModal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+
+  async function loadFiles() {
+    const c = document.getElementById('fileList');
+    c.innerHTML = '<p>Cargando...</p>';
+    try {
+      const res  = await fetch('/ftp-files/');
+      const html = await res.text();
+      const doc  = new DOMParser().parseFromString(html, 'text/html');
+      const links = [...doc.querySelectorAll('a[href]')]
+        .map(a => a.getAttribute('href'))
+        .filter(h => h && !h.startsWith('?') && !h.startsWith('/') && h !== '../' && h !== './');
+      if (!links.length) {
+        c.innerHTML = '<p>No hay archivos en la carpeta FTP aún.</p>';
+        return;
+      }
+      c.innerHTML = '';
+      links.forEach(name => {
+        const clean = decodeURIComponent(name);
+        const ext   = clean.split('.').pop().toLowerCase();
+        const icons = { png:'🖼', jpg:'🖼', jpeg:'🖼', gif:'🖼', pdf:'📄',
+                        txt:'📝', sh:'⚙', html:'🌐', css:'🎨', js:'📜',
+                        zip:'🗜', sql:'🐘', mp4:'🎬', mp3:'🎵' };
+        const icon = icons[ext] || (clean.endsWith('/') ? '📁' : '📄');
+        const d = document.createElement('div');
+        d.className = 'file-item';
+        d.innerHTML = `<span class="file-icon">${icon}</span>
+                       <a href="/ftp-files/${name}" target="_blank">${clean}</a>`;
+        c.appendChild(d);
+      });
+    } catch {
+      c.innerHTML = '<p>Error al cargar archivos. Intenta de nuevo.</p>';
+    }
+  }
+</script>
+</body>
+</html>

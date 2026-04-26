@@ -1,0 +1,84 @@
+# docker-compose.yml — Tarea 10
+# Infraestructura: Apache Web + PostgreSQL + vsftpd FTP
+# Host: Devuan Daedalus 5.0.1 (SysVinit)
+# Ejecutar como root o usuario con acceso a Docker
+
+services:
+
+  # ── Servidor Web Apache ──────────────────────────────────────────────────
+  web_apache:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: web_apache
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - web_content:/var/www/html/ftp-files
+    networks:
+      infra_red:
+        ipv4_address: 172.20.0.10
+    mem_limit: 512m
+    cpus: "0.5"
+    depends_on:
+      - db_postgres
+
+  # ── Base de Datos PostgreSQL ─────────────────────────────────────────────
+  db_postgres:
+    image: postgres:15
+    container_name: db_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Admin1234
+      POSTGRES_DB: tarea10db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # Respaldo automático hacia carpeta del host (Prueba 10.1)
+      - ./backups:/backups
+    networks:
+      infra_red:
+        ipv4_address: 172.20.0.20
+    mem_limit: 512m
+    cpus: "0.5"
+
+  # ── Servidor FTP vsftpd ───────────────────────────────────────────────────
+  ftp_vsftpd:
+    build:
+      context: ./ftp
+      dockerfile: Dockerfile
+    container_name: ftp_vsftpd
+    restart: unless-stopped
+    # CAP_SYS_ADMIN necesario para mount --bind dentro del contenedor
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
+    volumes:
+      - web_content:/home/ftp/public
+    networks:
+      infra_red:
+        ipv4_address: 172.20.0.30
+    mem_limit: 256m
+    cpus: "0.25"
+
+# ── Volúmenes persistentes ────────────────────────────────────────────────
+volumes:
+  db_data:
+    name: db_data
+  web_content:
+    name: web_content
+
+# ── Red bridge personalizada ──────────────────────────────────────────────
+networks:
+  infra_red:
+    name: infra_red
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
